@@ -10,7 +10,7 @@ import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 
-// Load environment variables
+
 dotenv.config();
 
 const app = express();
@@ -267,6 +267,356 @@ app.get('/test-generate-otp', (req, res) => {
     });
   }
 });
+// ============================
+// REGISTRATION OTP ROUTES  
+// ============================
+
+// Send OTP for registration verification
+app.post('/auth/send-registration-otp', authLimiter, async (req, res) => {
+  try {
+    const { email, role, userData } = req.body;
+    
+    console.log(`📧 Registration OTP request - Email: ${email}, Role: ${role}`);
+    
+    // Validation
+    if (!email || !validateEmail(email)) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+    
+    if (!['employee', 'company'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role specified' });
+    }
+    
+    // Check if email already exists
+    const existingUser = await pool.query('SELECT user_id FROM users WHERE email = $1', [email.toLowerCase()]);
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({ error: 'Email already registered. Please use a different email.' });
+    }
+    
+    // Generate OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    
+    console.log(`🔢 Generated OTP: ${otp} for ${email} (expires in 10 minutes)`);
+    
+    // Store OTP with user data
+    adminOtps.set(email.toLowerCase(), {
+      otp,
+      role,
+      userData,
+      type: 'registration',
+      expiresAt,
+      attempts: 0,
+      createdAt: new Date().toISOString()
+    });
+    
+    // Create welcome email content
+    const userName = role === 'employee' ? userData.name : userData.companyName;
+    const otpEmailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+        <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #1c266a; margin-bottom: 10px; font-size: 28px;">Welcome to Settlo HR Solutions!</h1>
+            <p style="color: #666; font-size: 16px; margin: 0;">Thank you for connecting with us</p>
+          </div>
+          
+          <div style="background: linear-gradient(135deg, #1c266a 0%, #1da46f 100%); padding: 30px; border-radius: 10px; text-align: center; margin: 20px 0;">
+            <h3 style="color: white; margin-bottom: 15px; font-size: 18px;">Verify Your ${role === 'employee' ? 'Employee' : 'Company'} Registration</h3>
+            <p style="color: white; margin-bottom: 20px;">Hello ${userName}, please use the OTP below to complete your registration:</p>
+            <div style="background: white; display: inline-block; padding: 20px 30px; border-radius: 8px; margin: 10px 0;">
+              <h1 style="font-size: 36px; color: #1c266a; margin: 0; letter-spacing: 8px; font-family: monospace;">${otp}</h1>
+            </div>
+            <p style="color: white; margin-top: 15px; font-size: 14px;">This OTP will expire in 10 minutes</p>
+          </div>
+          
+          <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h4 style="color: #333; margin-top: 0;">Why Settlo HR Solutions?</h4>
+            ${role === 'employee' ? `
+              <ul style="color: #666; line-height: 1.6;">
+                <li>🎯 Personalized job matching based on your skills</li>
+                <li>💼 Direct connections with top companies</li>
+                <li>🚀 Fast-track your career growth</li>
+                <li>🆓 Completely free service for job seekers</li>
+                <li>🤝 Dedicated support throughout your journey</li>
+              </ul>
+            ` : `
+              <ul style="color: #666; line-height: 1.6;">
+                <li>🎯 Access to pre-screened, qualified candidates</li>
+                <li>⚡ Quick and efficient hiring process</li>
+                <li>💯 3-month warranty on all placements</li>
+                <li>📈 Transparent and competitive pricing</li>
+                <li>🤝 Dedicated account management</li>
+              </ul>
+            `}
+          </div>
+          
+          <div style="background: #e3f2fd; border-left: 4px solid #2196f3; padding: 15px; margin: 20px 0;">
+            <p style="margin: 0; color: #333; font-size: 14px;">
+              <strong>Next Steps:</strong><br>
+              1. Enter the OTP in the registration form<br>
+              2. Complete your profile setup<br>
+              3. Start ${role === 'employee' ? 'exploring opportunities' : 'posting job requirements'}<br>
+              4. Connect with our team for personalized assistance
+            </p>
+          </div>
+          
+          <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
+            <p style="color: #666; font-size: 14px; margin-bottom: 10px;">
+              If you didn't request this registration, please ignore this email.
+            </p>
+            <p style="color: #999; font-size: 12px; margin: 0;">
+              <strong>Settlo HR Solutions</strong><br>
+              📍 121, Akhil Plaza, Perundurai Road, Erode, Tamil Nadu<br>
+              📧 info@settlohrsolutions.com | 📞 Contact: [Your Phone Number]
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // Send email
+    const emailSent = await sendEmail(
+      email,
+      `Welcome to Settlo HR! Verify Your ${role === 'employee' ? 'Employee' : 'Company'} Registration`,
+      otpEmailHtml
+    );
+    
+    if (!emailSent) {
+      console.error(`❌ Failed to send OTP email to: ${email}`);
+      adminOtps.delete(email.toLowerCase());
+      return res.status(500).json({ error: 'Failed to send OTP email. Please try again.' });
+    }
+    
+    console.log(`✅ Registration OTP sent successfully to: ${email} for role: ${role}`);
+    res.json({ 
+      message: 'OTP sent successfully! Please check your inbox or spam folder.',
+      email: email,
+      role: role,
+      expiresIn: '10 minutes'
+    });
+    
+  } catch (error) {
+    console.error('Send registration OTP error:', error);
+    res.status(500).json({ error: 'Failed to send OTP. Please try again.' });
+  }
+});
+
+// Resend registration OTP
+app.post('/auth/resend-registration-otp', authLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    console.log(`🔄 Registration OTP resend request - Email: ${email}`);
+    
+    if (!email || !validateEmail(email)) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+    
+    // Check if there's an existing OTP request
+    const storedOtp = adminOtps.get(email.toLowerCase());
+    if (!storedOtp || storedOtp.type !== 'registration') {
+      return res.status(400).json({ error: 'No registration OTP request found. Please start the process again.' });
+    }
+    
+    // Generate new OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    
+    console.log(`🔢 Generated new OTP: ${otp} for ${email}`);
+    
+    // Update stored OTP
+    adminOtps.set(email.toLowerCase(), {
+      ...storedOtp,
+      otp,
+      expiresAt,
+      attempts: 0 // Reset attempts
+    });
+    
+    const userName = storedOtp.role === 'employee' ? storedOtp.userData.name : storedOtp.userData.companyName;
+    
+    // Send new OTP email (simplified version)
+    const otpEmailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="color: #1c266a; margin-bottom: 10px;">Settlo HR Solutions</h1>
+          <h2 style="color: #333; margin: 0;">Registration OTP - Resent</h2>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px; text-align: center; margin: 20px 0;">
+          <h3 style="color: white; margin-bottom: 15px;">Your New Registration OTP</h3>
+          <p style="color: white; margin-bottom: 20px;">Hello ${userName}, here's your new OTP:</p>
+          <div style="background: white; display: inline-block; padding: 20px 30px; border-radius: 8px; margin: 10px 0;">
+            <h1 style="font-size: 36px; color: #1c266a; margin: 0; letter-spacing: 8px; font-family: monospace;">${otp}</h1>
+          </div>
+          <p style="color: white; margin-top: 15px; font-size: 14px;">This OTP will expire in 10 minutes</p>
+        </div>
+        
+        <p style="color: #666; font-size: 14px; text-align: center;">
+          This is a resent OTP. If you didn't request this, please ignore this email.
+        </p>
+        
+        <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
+          <p style="color: #999; font-size: 12px; margin: 0;">
+            Best regards,<br>Settlo HR Team<br>
+            📍 121, Akhil Plaza, Perundurai Road, Erode
+          </p>
+        </div>
+      </div>
+    `;
+    
+    const emailSent = await sendEmail(
+      email,
+      'Registration OTP (Resent) - Settlo HR',
+      otpEmailHtml
+    );
+    
+    if (!emailSent) {
+      console.error(`❌ Failed to resend OTP email to: ${email}`);
+      return res.status(500).json({ error: 'Failed to resend OTP email. Please try again.' });
+    }
+    
+    console.log(`✅ Registration OTP resent successfully to: ${email}`);
+    res.json({ message: 'OTP resent successfully! Please check your inbox or spam folder.' });
+    
+  } catch (error) {
+    console.error('Resend registration OTP error:', error);
+    res.status(500).json({ error: 'Failed to resend OTP. Please try again.' });
+  }
+});
+
+// Verify OTP and complete registration
+app.post('/auth/verify-registration-otp', authLimiter, async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { email, otp } = req.body;
+    
+    console.log(`🔐 Registration OTP verification - Email: ${email}, OTP: ${otp}`);
+    
+    if (!email || !otp) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Email and OTP are required' });
+    }
+    
+    // Verify OTP
+    const storedOtp = adminOtps.get(email.toLowerCase());
+    if (!storedOtp || storedOtp.type !== 'registration') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No registration OTP found. Please request a new OTP.' });
+    }
+    
+    if (Date.now() > storedOtp.expiresAt) {
+      adminOtps.delete(email.toLowerCase());
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
+    }
+    
+    if (storedOtp.otp !== otp) {
+      storedOtp.attempts += 1;
+      if (storedOtp.attempts >= 3) {
+        adminOtps.delete(email.toLowerCase());
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Too many failed attempts. Please request a new OTP.' });
+      }
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `Invalid OTP. ${3 - storedOtp.attempts} attempts remaining.` });
+    }
+    
+    // OTP verified, now complete registration
+    const { role, userData } = storedOtp;
+    
+    // Check email doesn't exist (double check)
+    const existingUser = await client.query('SELECT user_id FROM users WHERE email = $1', [email.toLowerCase()]);
+    if (existingUser.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Email already registered' });
+    }
+    
+    // Hash password
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(userData.password, saltRounds);
+    
+    // Create user
+    const userResult = await client.query(`
+      INSERT INTO users (email, password_hash, role, is_active) 
+      VALUES ($1, $2, $3, true) 
+      RETURNING user_id
+    `, [email.toLowerCase(), hashedPassword, role]);
+    
+    const userId = userResult.rows[0].user_id;
+    
+    // Create role-specific profile
+    if (role === 'employee') {
+      await client.query(`
+        INSERT INTO employees (user_id, full_name, phone, qualification, industry, preferred_location, preferred_salary)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `, [userId, userData.name, userData.mobile.replace('+91', ''), userData.qualification, 
+          userData.industry, userData.emplocation, userData.empsalary || 0]);
+
+      // Handle skills
+      if (userData.skills) {
+        const skillsArray = userData.skills.split(',').map(skill => skill.trim()).filter(skill => skill);
+        for (const skillName of skillsArray) {
+          const skillResult = await client.query(`
+            INSERT INTO skills (name, category) VALUES ($1, $2) 
+            ON CONFLICT (name) DO NOTHING 
+            RETURNING skill_id
+          `, [skillName, 'General']);
+          
+          let skillId;
+          if (skillResult.rows.length > 0) {
+            skillId = skillResult.rows[0].skill_id;
+          } else {
+            const existingSkill = await client.query('SELECT skill_id FROM skills WHERE name = $1', [skillName]);
+            if (existingSkill.rows.length > 0) {
+              skillId = existingSkill.rows.skill_id;
+            }
+          }
+          
+          if (skillId) {
+            const empResult = await client.query('SELECT employee_id FROM employees WHERE user_id = $1', [userId]);
+            if (empResult.rows.length > 0) {
+              await client.query(`
+                INSERT INTO employee_skills (employee_id, skill_id, proficiency_level)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (employee_id, skill_id) DO NOTHING
+              `, [empResult.rows[0].employee_id, skillId, 'intermediate']);
+            }
+          }
+        }
+      }
+    } else if (role === 'company') {
+      await client.query(`
+        INSERT INTO companies (user_id, name, companyname, contact_person_phone, contact_email, industry, location, contact_person_name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [userId, userData.companyName, userData.companyName, userData.mobile.replace('+91', ''), 
+          email.toLowerCase(), userData.industry, userData.location, userData.contactPersonName]);
+    }
+    
+    await client.query('COMMIT');
+    
+    // Clean up OTP
+    adminOtps.delete(email.toLowerCase());
+    
+    console.log(`✅ Registration completed successfully: ${email} as ${role}`);
+    
+    res.status(201).json({ 
+      message: 'Registration successful! Welcome to Settlo HR Solutions.',
+      userId: userId,
+      role: role
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Registration verification error:', error);
+    res.status(500).json({ error: 'Registration failed. Please try again.' });
+  } finally {
+    client.release();
+  }
+});
+
 
 app.post('/auth/register', authLimiter, async (req, res) => {
   const client = await pool.connect();
@@ -419,6 +769,262 @@ app.post('/auth/register', authLimiter, async (req, res) => {
   }
 });
 
+app.delete('/api/admin/job-requests/:id', authenticateToken, authorizeRole(['super_admin']), async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { id } = req.params;
+    
+    // Get job request details before deletion
+    const jobResult = await client.query('SELECT title, company_id FROM job_requests WHERE request_id = $1', [id]);
+    if (jobResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Job request not found' });
+    }
+    
+    const job = jobResult.rows[0];
+    
+    // Delete job request (CASCADE will handle related records like connections)
+    await client.query('DELETE FROM job_requests WHERE request_id = $1', [id]);
+    
+    await client.query('COMMIT');
+    
+    console.log(`✅ Job request deleted: ${job.title}`);
+    res.json({ message: 'Job request deleted successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Delete job request error:', error);
+    res.status(500).json({ error: 'Failed to delete job request' });
+  } finally {
+    client.release();
+  }
+});
+
+
+
+// Add this route for sending OTP for password reset
+app.post('/auth/send-otp', authLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email || !validateEmail(email)) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+    
+    // Check if user exists
+    const userResult = await pool.query('SELECT user_id, email FROM users WHERE email = $1', [email.toLowerCase()]);
+    if (userResult.rows.length === 0) {
+      // Don't reveal if email exists or not
+      return res.json({ message: 'If the email exists, an OTP has been sent.' });
+    }
+    
+    // Generate OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    
+    // Store OTP (you can reuse the adminOtps Map or create a separate one)
+    adminOtps.set(email.toLowerCase(), {
+      otp,
+      type: 'password_reset',
+      expiresAt,
+      attempts: 0,
+      createdAt: new Date().toISOString()
+    });
+    
+    // Send OTP email
+    const otpEmailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #1c266a;">Password Reset OTP</h2>
+        <p>Hello,</p>
+        <p>You have requested to reset your password. Use the OTP below:</p>
+        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
+          <h1 style="font-size: 36px; color: #1c266a; margin: 0; letter-spacing: 8px;">${otp}</h1>
+        </div>
+        <p>This OTP will expire in 10 minutes.</p>
+        <p>If you didn't request this, please ignore this email.</p>
+        <p>Best regards,<br>Settlo HR Team</p>
+      </div>
+    `;
+    
+    const emailSent = await sendEmail(email, 'Password Reset OTP - Settlo HR', otpEmailHtml);
+    
+    if (!emailSent) {
+      adminOtps.delete(email.toLowerCase());
+      return res.status(500).json({ error: 'Failed to send OTP email. Please try again.' });
+    }
+    
+    res.json({ message: 'OTP sent successfully' });
+    
+  } catch (error) {
+    console.error('Send OTP error:', error);
+    res.status(500).json({ error: 'Failed to send OTP. Please try again.' });
+  }
+});
+
+// Add this route for resending OTP
+app.post('/auth/resend-otp', authLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email || !validateEmail(email)) {
+      return res.status(400).json({ error: 'Valid email is required' });
+    }
+    
+    // Check if there's an existing OTP request
+    const storedOtp = adminOtps.get(email.toLowerCase());
+    if (!storedOtp || storedOtp.type !== 'password_reset') {
+      return res.status(400).json({ error: 'No OTP request found. Please start the process again.' });
+    }
+    
+    // Generate new OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    
+    // Update stored OTP
+    adminOtps.set(email.toLowerCase(), {
+      ...storedOtp,
+      otp,
+      expiresAt,
+      attempts: 0 // Reset attempts
+    });
+    
+    // Send new OTP email (same format as above)
+    const otpEmailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #1c266a;">Password Reset OTP (Resent)</h2>
+        <p>Hello,</p>
+        <p>You have requested a new OTP. Use the OTP below:</p>
+        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
+          <h1 style="font-size: 36px; color: #1c266a; margin: 0; letter-spacing: 8px;">${otp}</h1>
+        </div>
+        <p>This OTP will expire in 10 minutes.</p>
+        <p>Best regards,<br>Settlo HR Team</p>
+      </div>
+    `;
+    
+    const emailSent = await sendEmail(email, 'Password Reset OTP (Resent) - Settlo HR', otpEmailHtml);
+    
+    if (!emailSent) {
+      return res.status(500).json({ error: 'Failed to resend OTP email. Please try again.' });
+    }
+    
+    res.json({ message: 'OTP resent successfully' });
+    
+  } catch (error) {
+    console.error('Resend OTP error:', error);
+    res.status(500).json({ error: 'Failed to resend OTP. Please try again.' });
+  }
+});
+
+// Add this route for resetting password with OTP
+app.post('/auth/reset-password-with-otp', authLimiter, async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+    
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ error: 'Email, OTP, and new password are required' });
+    }
+    
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+    }
+    
+    // Verify OTP
+    const storedOtp = adminOtps.get(email.toLowerCase());
+    if (!storedOtp || storedOtp.type !== 'password_reset') {
+      return res.status(400).json({ error: 'No OTP found. Please request a new OTP.' });
+    }
+    
+    if (Date.now() > storedOtp.expiresAt) {
+      adminOtps.delete(email.toLowerCase());
+      return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
+    }
+    
+    if (storedOtp.otp !== otp) {
+      storedOtp.attempts += 1;
+      if (storedOtp.attempts >= 3) {
+        adminOtps.delete(email.toLowerCase());
+        return res.status(400).json({ error: 'Too many failed attempts. Please request a new OTP.' });
+      }
+      return res.status(400).json({ error: `Invalid OTP. ${3 - storedOtp.attempts} attempts remaining.` });
+    }
+    
+    // Get user
+    const userResult = await pool.query('SELECT user_id, email FROM users WHERE email = $1', [email.toLowerCase()]);
+    if (userResult.rows.length === 0) {
+      adminOtps.delete(email.toLowerCase());
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = userResult.rows[0];
+    
+    // Hash new password
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+    
+    // Update password
+    await pool.query(`
+      UPDATE users SET 
+        password_hash = $1,
+        failed_login_attempts = 0,
+        locked_until = NULL
+      WHERE user_id = $2
+    `, [hashedPassword, user.user_id]);
+    
+    // Clean up OTP
+    adminOtps.delete(email.toLowerCase());
+    
+    console.log(`✅ Password reset successfully for: ${user.email}`);
+    res.json({ message: 'Password reset successfully' });
+    
+  } catch (error) {
+    console.error('Reset password with OTP error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+app.delete('/api/admin/connections/:id', authenticateToken, authorizeRole(['super_admin']), async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { id } = req.params;
+    
+    // Get connection details before deletion
+    const connResult = await client.query(`
+      SELECT jrc.*, e.full_name as employee_name, jr.title as job_title, c.name as company_name
+      FROM job_request_connections jrc
+      JOIN employees e ON jrc.employee_id = e.employee_id
+      JOIN job_requests jr ON jrc.request_id = jr.request_id
+      JOIN companies c ON jrc.company_id = c.company_id
+      WHERE jrc.connection_id = $1
+    `, [id]);
+    
+    if (connResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Connection not found' });
+    }
+    
+    const connection = connResult.rows[0];
+    
+    // Delete connection
+    await client.query('DELETE FROM job_request_connections WHERE connection_id = $1', [id]);
+    
+    await client.query('COMMIT');
+    
+    console.log(`✅ Connection deleted: ${connection.employee_name} - ${connection.job_title}`);
+    res.json({ message: 'Connection deleted successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Delete connection error:', error);
+    res.status(500).json({ error: 'Failed to delete connection' });
+  } finally {
+    client.release();
+  }
+});
 app.post('/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -2856,11 +3462,13 @@ app.use('/*catchall', (req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
+// Remove endpoints with no frontend usage or that are unused
+// Keep necessary global error handling and graceful shutdown
 
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully');
   pool.end(() => {
-    console.log('Database pool closed');
+    console.log('Database pool closed'); 
     process.exit(0);
   });
 });
