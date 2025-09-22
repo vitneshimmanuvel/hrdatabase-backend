@@ -370,8 +370,8 @@ app.post('/auth/send-registration-otp', authLimiter, async (req, res) => {
             </p>
             <p style="color: #999; font-size: 12px; margin: 0;">
               <strong>Settlo HR Solutions</strong><br>
-              📍 121, Akhil Plaza, Perundurai Road, Erode, Tamil Nadu<br>
-              📧 info@settlohrsolutions.com | 📞 Contact: [Your Phone Number]
+               121, Akhil Plaza, Perundurai Road, Erode, Tamil Nadu<br>
+                | 📞 Contact: 90036 33356
             </p>
           </div>
         </div>
