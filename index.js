@@ -1073,7 +1073,7 @@ app.post('/auth/login', authLimiter, async (req, res) => {
         role: user.role 
       },
       JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn: '30d' }
     );
 
     console.log(`✅ User logged in: ${email} as ${user.role}`);
